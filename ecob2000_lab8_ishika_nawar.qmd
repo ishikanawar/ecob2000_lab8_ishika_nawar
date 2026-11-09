@@ -1,0 +1,215 @@
+---
+title: "ecob2000_lab8_ishika_nawar"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+```{r}
+1 + 1
+```
+
+You can add options to executable code like this
+
+```{r}
+#| echo: false
+2 * 2
+```
+
+The `echo: false` option disables the printing of code (only output is displayed).
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(AER)
+library(haven)
+library(car)
+library(sandwich)
+```
+
+```{r}
+setwd("~/Documents/R Projects/ecob2000_lab6")
+load("ACS2021_couples.Rdata")
+attach(acs2021_couples)
+summary(acs2021_couples)
+```
+
+```{r}
+# Establishing the subset
+trad_data <- acs2021_couples %>%
+  filter(SEX == "Female", h_sex == 1, RELATE == 2, AGE >= 18, h_age >= 18)
+
+#Establishing the dependent dummy variable
+
+trad_data$age_diff <- trad_data$AGE - trad_data$h_age
+
+trad_data$he_more_than_5yrs_than_her <- as.numeric(trad_data$age_diff < -5)
+```
+
+```{r}
+table(trad_data$he_more_than_5yrs_than_her,cut(trad_data$age_diff,c(-100,-10, -5, 0, 5, 10, 100)))
+mean(trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+# Establishing dummies for independent variable of REGION. Since the couple lives in the same household, it will be the same variable for both spouses, so only one set of dummies.
+
+trad_data$REGION_f <- factor(trad_data$REGION,
+                             levels = c(11, 12, 21, 22, 31, 32, 33, 41, 42),
+                             labels = c("New England", "Middle Atlantic", "East North Central",
+                                        "West North Central", "South Atlantic", "East South Central",
+                                        "West South Central", "Mountain", "Pacific"))
+trad_data$REGION_f <- relevel(trad_data$REGION_f, ref = "South Atlantic")
+```
+
+```{r}
+#Establishing dummies for independent variable of Race. For the wife (RACE) and husband (h_race), base = White.
+race_labels <- c("White", "Black", "American Indian or Alaska Native",
+                 "Chinese", "Japanese", "Other Asian or Pacific Islander",
+                 "Other race", "Two races", "Three or more races")
+
+trad_data$wife_race <- factor(as.numeric(as.character(trad_data$RACE)),
+                              levels = 1:9, labels = race_labels)
+trad_data$hus_race  <- factor(as.numeric(as.character(trad_data$h_race)),
+                              levels = 1:9, labels = race_labels)
+
+class(trad_data$wife_race)  
+```
+
+```{r}
+# Establishing dummies for independent variable  of Education Levels. For the wife (EDUC) and husband (h_educ), 5 categories. Base = less than high school. (3 yrs college has 0 obs in this file.)
+educ_cat <- function(x) {
+  x <- as.character(x)
+  case_when(
+    x == "Grade 12"                                              ~ "HS",
+    x %in% c("1 year of college", "2 years of college",
+             "3 years of college")                               ~ "Some college",
+    x == "4 years of college"                                    ~ "College",
+    x == "5+ years of college"                                   ~ "Advanced degree",
+    TRUE                                                         ~ "Less than HS"
+  )
+}
+lv <- c("Less than HS", "HS", "Some college", "College", "Advanced degree")
+trad_data$wife_educ <- factor(educ_cat(trad_data$EDUC),   levels = lv)
+trad_data$hus_educ  <- factor(educ_cat(trad_data$h_educ), levels = lv)
+
+trad_data <- trad_data %>% mutate(
+  wife_hs       = as.numeric(wife_educ == "HS"),
+  wife_somecoll = as.numeric(wife_educ == "Some college"),
+  wife_college  = as.numeric(wife_educ == "College"),
+  wife_advdeg   = as.numeric(wife_educ == "Advanced degree"),
+  hus_hs        = as.numeric(hus_educ  == "HS"),
+  hus_somecoll  = as.numeric(hus_educ  == "Some college"),
+  hus_college   = as.numeric(hus_educ  == "College"),
+  hus_advdeg    = as.numeric(hus_educ  == "Advanced degree")
+)
+```
+
+```{r}
+# Establishing dummies for independent variable of Degree Field. DEGREE FIELD: collapse ~38 fields into a handful of groups.DEGFIELD (wife) is a factor; h_degfield (husband) is numeric IPUMS code.
+#    Convert the wife's factor to the same numeric codes first
+#    (levels are in code order; level 1 = "N/A" = 0).
+# ------------------------------------------------------------------
+codes <- c(0, 11, 13, 14, 15, 19, 20, 21, 22, 23, 24, 25, 26, 29, 32, 33, 34,
+           35, 36, 37, 38, 40, 41, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+           59, 60, 61, 62, 64)
+trad_data$wife_degcode <- codes[as.integer(trad_data$DEGFIELD)]
+table(trad_data$DEGFIELD, trad_data$wife_degcode)[1:5, 1:5]   # spot-check mapping
+
+field_group <- function(code) {
+  case_when(
+    code == 0                                    ~ "No bachelor's degree",
+    code %in% c(11, 13, 21, 24, 25, 36, 37, 50, 51) ~ "STEM",   # agric/env, CS, engineering, bio, math, phys sci
+    code == 62                                   ~ "Business",
+    code %in% c(15, 52, 53, 54, 55)              ~ "Social science/Public service", # area studies, psych, CJ, public affairs, soc sci
+    code == 23                                   ~ "Education",
+    code == 61                                   ~ "Health",
+    code %in% c(19, 20, 26, 33, 34, 35, 48, 49, 60, 64) ~ "Humanities/Arts/Comm",
+    TRUE                                         ~ "Other"
+  )
+}
+fl <- c("No bachelor's degree", "STEM", "Business", "Social science/Public service",
+        "Education", "Health", "Humanities/Arts/Comm", "Other")
+trad_data$wife_field <- factor(field_group(trad_data$wife_degcode), levels = fl)
+trad_data$hus_field  <- factor(field_group(trad_data$h_degfield),   levels = fl)
+```
+
+```{r}
+# Model A Linear Model: region, race, and the full 5-level education (no field)
+mA_LM <- lm(he_more_than_5yrs_than_her ~ REGION_f + wife_race + hus_race +
+           wife_educ + hus_educ + REGION_f:wife_race + REGION_f:hus_race, data = trad_data)
+
+summary(mA_LM)
+```
+
+```{r}
+# Model B Linear Model: region, race, and degree field (no education levels) 
+mB_LM <- lm(he_more_than_5yrs_than_her ~ REGION_f + wife_race + hus_race + wife_field + hus_field + REGION_f:wife_race + REGION_f:hus_race, data = trad_data)
+
+summary(mB_LM)
+```
+
+```{r}
+pred_vals_olsA <- predict(mA_LM, trad_data)
+pred_models_olsA <- (pred_vals_olsA > mean(pred_vals_olsA))
+table(pred = pred_models_olsA, true = trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+# Model A Logit
+mA_logit <- glm(he_more_than_5yrs_than_her ~ REGION_f + wife_race + hus_race +
+              wife_educ + hus_educ + REGION_f:wife_race + REGION_f:hus_race, data = trad_data, family = binomial)
+
+summary(mA_logit)
+```
+
+```{r}
+mean(pred_vals_olsA)
+```
+
+```{r}
+pred_vals_olsA <- predict(mA_LM, trad_data)
+pred_models_olsA_1 <- (pred_vals_olsA > 0.5)
+table(pred = pred_models_olsA_1, true = trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+pred_vals_olsB <- predict(mB_LM, trad_data)
+pred_models_olsB <- (pred_vals_olsB > mean(pred_vals_olsB))
+table(pred = pred_models_olsB, true = trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+pred_vals_olsB <- predict(mB_LM, trad_data)
+pred_models_olsB_1 <- (pred_vals_olsB > 0.5)
+table(pred = pred_models_olsB_1, true = trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+mean(pred_vals_olsB)
+```
+
+```{r}
+mB_logit <- glm(he_more_than_5yrs_than_her ~ REGION_f + wife_race + hus_race + wife_field + hus_field + REGION_f:wife_race + REGION_f:hus_race, data = trad_data, family = binomial)
+
+summary(mB_logit)
+```
+
+```{r}
+pred_vals_logitA <- predict(mA_logit, trad_data, type = "response")
+pred_models_logitA <- (pred_vals_logitA > mean(pred_vals_logitA))
+table(pred = pred_models_logitA, true = trad_data$he_more_than_5yrs_than_her)
+```
+
+```{r}
+pred_vals_logitB <- predict(mB_logit, trad_data, type = "response")
+pred_models_logitB <- (pred_vals_logitB > mean(pred_vals_logitB))
+table(pred = pred_models_logitB, true = trad_data$he_more_than_5yrs_than_her)
+```
